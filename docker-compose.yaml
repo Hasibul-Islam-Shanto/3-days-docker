@@ -1,0 +1,133 @@
+services:
+  # ---------------------------------------------------------------------------
+  # Database Service (Isolated, Resource-Capped, Non-root App User)
+  # ---------------------------------------------------------------------------
+  db:
+    image: mysql:8.0
+    container_name: written-db
+    restart: always
+    stop_grace_period: 45s
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --default-authentication-plugin=caching_sha2_password
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER:-appuser}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-apppassword}
+    volumes:
+      - db_data:/var/lib/mysql
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "mysqladmin",
+          "ping",
+          "-h",
+          "localhost",
+          "-u",
+          "root",
+          "-p${MYSQL_ROOT_PASSWORD}",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.5"
+          memory: 1024M
+        reservations:
+          cpus: "0.5"
+          memory: 512M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - backend-tier
+
+  # ---------------------------------------------------------------------------
+  # Backend API Server (Internal Only, No Exposed Host Ports)
+  # ---------------------------------------------------------------------------
+  server:
+    build:
+      context: ./server
+      dockerfile: Dockerfile.optimize
+    container_name: written-server
+    restart: always
+    stop_grace_period: 20s
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=mysql+pymysql://${MYSQL_USER:-appuser}:${MYSQL_PASSWORD:-apppassword}@db:3306/${MYSQL_DATABASE}
+    # Notice: NO "ports:" block! Only reachable inside the Docker networks.
+    depends_on:
+      db:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+        reservations:
+          cpus: "0.25"
+          memory: 256M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - backend-tier
+      - frontend-tier
+
+  # ---------------------------------------------------------------------------
+  # Frontend & Reverse Proxy (The ONLY Public Entrypoint)
+  # ---------------------------------------------------------------------------
+  client:
+    build:
+      context: ./client
+      dockerfile: Dockerfile.optimize
+    container_name: written-client
+    restart: always
+    env_file:
+      - .env
+    ports:
+      - "3000:3000"
+    depends_on:
+      server:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - frontend-tier
+
+volumes:
+  db_data:
+    driver: local
+
+networks:
+  # Network connecting Client (Nginx) <-> Server (FastAPI)
+  frontend-tier:
+    driver: bridge
+  # Network connecting Server (FastAPI) <-> Database (MySQL)
+  backend-tier:
+    driver: bridge
