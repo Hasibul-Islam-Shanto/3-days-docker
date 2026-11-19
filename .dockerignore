@@ -1,0 +1,28 @@
+# Git
+.git
+.gitignore
+
+# OS & Editor
+.DS_Store
+.vscode
+.idea
+
+# Client artifacts
+client/node_modules/
+client/dist/
+
+# Server artifacts
+server/venv/
+server/.venv/
+server/__pycache__/
+server/**/__pycache__/
+*.py[cod]
+
+# Secrets & Environment
+**/.env
+**/.env.*
+!**/.env.example
+
+# Logs
+*.log
+npm-debug.log*

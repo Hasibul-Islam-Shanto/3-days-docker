@@ -1,0 +1,35 @@
+# Git
+.git
+.gitignore
+
+# Python Virtual Environments
+venv/
+.venv/
+env/
+.env/
+ENV/
+
+# Python Bytecode & Cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Environment Variables & Secrets
+.env
+.env.*
+!.env.example
+
+# Docker & Documentation
+Dockerfile*
+docker-compose*.yml
+README.md
+
+# OS & Editor files
+.DS_Store
+.vscode
+.idea

@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="Written — a quiet place for essays, notes, and ideas worth keeping."
+    />
+    <meta name="theme-color" content="#fbf8f2" />
+    <title>Written — essays worth keeping</title>
+    <script>
+      // Apply the saved theme before paint to avoid a light-mode flash.
+      (() => {
+        try {
+          const theme = localStorage.getItem("written-theme") === "dark" ? "dark" : "light";
+          document.documentElement.classList.toggle("dark", theme === "dark");
+          document.documentElement.style.colorScheme = theme;
+          document
+            .querySelector('meta[name="theme-color"]')
+            ?.setAttribute("content", theme === "dark" ? "#101310" : "#fbf8f2");
+        } catch {
+          // Ignore unavailable storage; the default stays light.
+        }
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
