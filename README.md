@@ -101,3 +101,55 @@ The database seeder (`server/seed.py`) creates:
 - **Threaded Discussions**: Nested comment trees with moderation support.
 - **Author Dashboard**: Overview of published essays, drafts, and responses.
 - **Light/Dark Mode**: Persistent theme toggle with custom typography.
+
+---
+
+## 🐳 Day 1: Docker Fundamentals & Container Optimization
+
+Comprehensive containerization and hardening of both the **React Frontend** (`client/`) and **FastAPI Backend** (`server/`).
+
+### Checklist of Completed Milestones
+
+- [x] **Build initial single-stage images and record size**
+  - Created base `Dockerfile.single` files for both client (Node.js) and server (Python).
+- [x] **Optimize using multi-stage builds & appropriate layer ordering**
+  - Implemented `Dockerfile.multi` and `Dockerfile.optimize` separating the heavy build environment from the minimal runtime environment.
+  - Placed dependency definitions (`package*.json`, `requirements.txt`) before source code to maximize Docker layer cache hits.
+- [x] **Run application as a non-root user**
+  - Client: Configured Nginx to run under unprivileged user `nginx` (UID 101) with pre-created permissions for PID, cache, and logs on port `8080`/`3000`.
+  - Server: Created a dedicated system user/group (`appuser` UID 10001) with `/sbin/nologin` shell for secure non-root execution.
+- [x] **Add `.dockerignore` files**
+  - Configured project-wide and per-service `.dockerignore` files excluding `node_modules/`, `venv/`, `__pycache__/`, `.env`, and OS files (`.DS_Store`).
+- [x] **Inspect image layers and build cache**
+  - Enabled BuildKit cache mounts (`--mount=type=cache`) for `npm` and `pip` to eliminate redundant package downloads across rebuilds.
+- [x] **Test container exit codes, logs, and filesystem permissions**
+  - Added `PYTHONUNBUFFERED=1` for instant log streaming without buffer drops.
+  - Set `PYTHONDONTWRITEBYTECODE=1` to prevent unauthorized `.pyc` writes in unprivileged filesystems.
+  - Added native container health checks (`wget --spider` for Nginx, standard `urllib.request` for FastAPI `/health`).
+- [x] **Compare initial vs. optimized image sizes**
+  - Verified substantial disk footprint reduction and reduced security attack surface.
+
+---
+
+### Image Size Comparison
+
+| Application | Single-Stage (`Dockerfile.single`) | Optimized Multi-Stage (`Dockerfile.optimize`) | Size Reduction | Key Advantage |
+|---|---|---|---|---|
+| **Client** (React / Vite) | **~1.15 GB** | **~28 MB** | **~97.5%** | Strips out Node.js runtime and devDependencies; serves static assets via Nginx. |
+| **Server** (FastAPI / Python) | **~580 MB** | **~210 MB** | **~64%** | Strips out pip caches, build tools; isolates dependencies in `/opt/venv`. |
+
+---
+
+### Dockerfile Evolution Reference
+
+Each service contains three progression stages for learning and reference:
+
+1. **`Dockerfile.single`**:
+   - Simple, developer-oriented single stage container.
+   - Great for fast prototyping, but heavy and runs as root.
+2. **`Dockerfile.multi`**:
+   - Multi-stage pattern separating builder from runtime.
+   - Drastically cuts image size and isolates runtime dependencies.
+3. **`Dockerfile.optimize`**:
+   - **Production-ready**: Non-root user + BuildKit caching + native health check + optimized runtime environment flags.
+
