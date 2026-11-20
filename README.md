@@ -153,3 +153,131 @@ Each service contains three progression stages for learning and reference:
 3. **`Dockerfile.optimize`**:
    - **Production-ready**: Non-root user + BuildKit caching + native health check + optimized runtime environment flags.
 
+---
+
+## 🚀 Day 2: Multi-Service Orchestration, Reverse Proxy & Troubleshooting
+
+Comprehensive multi-container orchestration using **Docker Compose**, implementing a production-grade 3-tier architecture with health checks, persistent volumes, network segmentation, log rotation, resource limits, and chaos engineering drills.
+
+### Architecture Overview
+
+```mermaid
+graph TD
+    User["Host Browser (http://localhost:3000)"] -->|Port 3000:3000| Client["written-client (React SPA + Nginx)"]
+    Client -->|Reverse Proxy /api/*| Server["written-server (FastAPI Backend)"]
+    Server -->|Internal DNS db:3306| DB[("written-db (MySQL 8.0)")]
+    DB --- Volume[("Named Volume: db_data")]
+
+    subgraph "Frontend Tier (frontend-tier)"
+        Client
+        Server
+    end
+
+    subgraph "Backend Tier (backend-tier)"
+        Server
+        DB
+    end
+```
+
+---
+
+### Checklist of Completed Milestones
+
+- [x] **Create a multi-service `compose.yaml` / `docker-compose.yaml`**
+  - Configured declarative stack orchestrating `client`, `server`, and `db`.
+- [x] **Configure separate application and database services**
+  - Decoupled FastAPI backend and MySQL into independent, dedicated containers.
+- [x] **Add Nginx as a reverse proxy**
+  - Single frontend ingress on port `3000` that serves static React assets and reverse-proxies all `/api/` requests internally to `http://written-server:8080`.
+- [x] **Persist database data using a named volume**
+  - Attached Docker named volume `db_data` to `/var/lib/mysql` to survive container lifecycles.
+- [x] **Use environment variables for configuration**
+  - Sourced credentials and environment settings centrally from `.env` using Compose variable interpolation and `env_file`.
+- [x] **Add a database health check and service dependencies**
+  - Implemented `mysqladmin ping` health check on `written-db`.
+  - Configured `server` to depend on `db` with `condition: service_healthy` to prevent premature startup race conditions.
+- [x] **Ensure the database is not unnecessarily exposed to the host**
+  - Removed host port bindings (`ports:` omitted) on `written-db` to prevent external database access from the host network.
+- [x] **Recreate containers and verify data persistence**
+  - Tested container destruction (`docker compose down`) and spin-up (`docker compose up -d`), confirming all database records and user registrations survive intact.
+- [x] **Deliberate failure and troubleshooting drills**
+  - **Drill 1 (DNS failure)**: Diagnosed internal Docker DNS resolution errors (`(2005, "Unknown MySQL server host")`).
+  - **Drill 2 (Credential failure)**: Diagnosed authentication rejection errors (`(1045, "Access denied for user")`).
+  - **Drill 3 (Port mapping collision)**: Diagnosed host port bind errors (`Bind for 0.0.0.0:3000 failed: port is already allocated`).
+
+---
+
+### Production-Grade Compose Features Implemented
+
+1. **Multi-Tier Network Segmentation**:
+   - `frontend-tier`: Connects `client` $\leftrightarrow$ `server`.
+   - `backend-tier`: Connects `server` $\leftrightarrow$ `db`.
+   - `client` and `db` are completely isolated—no route exists between them, preventing lateral movement if the web tier is compromised.
+2. **Log Rotation & Disk Protection**:
+   - Bound logs to `json-file` with `max-size: "10m"` and `max-file: "3"`, guaranteeing a strict upper bound of 30 MB log storage per container.
+3. **Resource Quotas & cgroups Limits**:
+   - Configured hard limits (`limits.cpus`, `limits.memory`) to prevent runaway queries or memory leaks from crashing the host machine (OOM).
+   - Configured reservations (`reservations.cpus`, `reservations.memory`) to ensure baseline performance under load.
+4. **Graceful Shutdown**:
+   - Added `stop_grace_period` (45s for DB, 20s for Server) giving processes adequate time to flush transactions and finish active HTTP requests before receiving `SIGKILL`.
+
+---
+
+### Quick Start with Docker Compose
+
+```bash
+# 1. Start all services in detached mode
+docker compose up -d --build
+
+# 2. Run the database migrations & demo seeder inside the server container
+docker compose exec server python seed.py
+
+# 3. View running services and health status
+docker compose ps
+
+# 4. Open the application in your browser
+open http://localhost:3000
+```
+
+---
+
+### 🧠 Day 2 Key Learnings & Troubleshooting Takeaways
+
+#### 1. Service Names vs Container Names
+- `docker compose` operates strictly on **service names** defined in the YAML (`server`, `db`, `client`).
+  ```bash
+  docker compose exec server python seed.py   # ✅ Correct (service name)
+  docker compose exec written-server ...     # ❌ Fails
+  ```
+- Raw `docker` commands operate on **container names** or IDs:
+  ```bash
+  docker exec -it written-server ...         # ✅ Correct (container name)
+  ```
+- This distinction exists so Compose can automatically route commands across scaled replicas (`server-1`, `server-2`).
+
+#### 2. Localhost vs Internal Docker DNS
+- Inside a container, `localhost` (or `127.0.0.1`) refers **only to that specific container's loopback interface**, not your Mac host or other containers.
+- Docker provides an embedded DNS server (`127.0.0.11`) on user-defined networks. Containers reach each other using their service names (`db:3306`, `server:8080`).
+
+#### 3. Named Volume Persistence Lifecycle
+- **Container filesystem**: Ephemeral. When a container is removed (`docker compose down`), any unmounted data inside it is destroyed.
+- **Named volume (`db_data`)**: Managed independently by the Docker daemon on the host. Recreating containers preserves all data, tables, and rows intact.
+
+#### 4. Service Health Checks vs Simple Startup
+- A container in the `running` state does **not** mean the software inside is ready to handle traffic (e.g. MySQL takes 15–20s to initialize buffer pools and start listening).
+- Using `depends_on: db: condition: service_healthy` prevents application crash loops by guaranteeing the database is answering queries before the backend boots.
+
+#### 5. Defense-in-Depth Network Tiering
+- By placing `client` on `frontend-tier` and `db` on `backend-tier`, the database has zero network route to the web client.
+- Omitting `ports:` on the database ensures it is never accessible from the host or external internet.
+
+#### 6. Diagnostic Failure Signatures
+
+| Failure Scenario | Error Code / Log Signature | Root Cause & Diagnostic Step |
+|---|---|---|
+| **DNS Resolution** | `(2005, "Unknown MySQL server host")` / `getaddrinfo failed` | Typo in service name or missing shared network. Test with `docker compose exec server python -c "import socket; socket.gethostbyname('db')"`. |
+| **Authentication** | `(1045, "Access denied for user")` | Network/TCP connected, but rejected at auth handshake. Check `docker compose logs db` and `.env` credentials. |
+| **Port Collision** | `Bind for 0.0.0.0:3000 failed: port is already allocated` | Host port is already in use by another container or host process. Find with `lsof -i :3000` or `docker ps`. |
+
+
+
