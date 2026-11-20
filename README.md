@@ -279,5 +279,270 @@ open http://localhost:3000
 | **Authentication** | `(1045, "Access denied for user")` | Network/TCP connected, but rejected at auth handshake. Check `docker compose logs db` and `.env` credentials. |
 | **Port Collision** | `Bind for 0.0.0.0:3000 failed: port is already allocated` | Host port is already in use by another container or host process. Find with `lsof -i :3000` or `docker ps`. |
 
+---
+
+## 🛡️ Day 3: CI/CD Automation, Security Hardening, Observability & Rollback Strategy
+
+The final milestone shifts focus from local multi-container development to **production-grade lifecycle management**: automated CI/CD builds, immutable image tagging, secrets management, least-privilege security hardening, health observability, chaos troubleshooting, and deterministic rollbacks.
+
+### Architecture: Continuous Delivery & Deployment Pipeline
+
+```mermaid
+flowchart LR
+    Dev["Developer Git Commit"] -->|Push to main| GHA["GitHub Actions CI/CD"]
+    
+    subgraph "Stage 1: Quality Gates"
+        GHA --> CheckClient["Client: Lint & Typecheck (tsc)"]
+        GHA --> CheckServer["Server: Syntax & Unit Check"]
+    end
+
+    subgraph "Stage 2: Secure Build & Tagging"
+        CheckClient --> DockerBuild["Build Multi-Stage Images"]
+        CheckServer --> DockerBuild
+        DockerBuild --> Tagging["Tag: sha-<git-sha> & latest"]
+    end
+
+    subgraph "Stage 3: Authenticated Registry"
+        DockerBuild --> RegistryAuth["Auth via GitHub Secrets"]
+        RegistryAuth --> Registry[("Registry: GHCR / Docker Hub")]
+    end
+
+    subgraph "Stage 4: Production Deployment"
+        Registry --> Deploy["Deploy: docker compose up -d"]
+        Deploy --> HealthMonitor["Healthchecks & Restart Policy"]
+        Deploy --> Hardening["Non-root & cgroups Limits"]
+    end
+
+    subgraph "Emergency Rollback"
+        HealthMonitor -->|Failure Detected| Rollback["Instant Rollback to Prior SHA Tag"]
+    end
+```
+
+---
+
+### Checklist of Completed Milestones
+
+- [x] **Tag images with a commit SHA rather than relying only on `latest`**
+  - Eliminated the non-deterministic `:latest` anti-pattern.
+  - Implemented immutable short Git commit SHA tagging (`sha-<commit-sha>`) alongside pointer tags.
+  - Parameterized `docker-compose.yaml` with dynamic `${IMAGE_TAG:-latest}` and `${IMAGE_REGISTRY}`.
+- [x] **Authenticate to Docker Hub or another registry using GitHub Actions secrets**
+  - Configured secure authentication via `docker/login-action@v3` supporting GitHub Container Registry (`ghcr.io` via `GITHUB_TOKEN`) and Docker Hub (`secrets.DOCKERHUB_USERNAME`, `secrets.DOCKERHUB_TOKEN`).
+  - Enforced zero-plain-text credentials policy across version control.
+- [x] **Publish the image only when the relevant checks pass**
+  - Created `.github/workflows/ci-cd.yml` with strict dependency stages (`needs: [verify-client, verify-server]`).
+  - Gated image pushes so build artifacts are only pushed on successful checks and merge to `main`.
+- [x] **Configure a health check and restart policy**
+  - Adopted `restart: unless-stopped` across all services to ensure resilience against server reboots while respecting deliberate administrative stops.
+  - Configured interval, timeout, retries, and start periods for application, reverse-proxy, and database containers.
+  - Orchestrated startup order via `depends_on: condition: service_healthy`.
+- [x] **Run the container with restricted privileges and appropriate resource limits**
+  - Enforced defense-in-depth: non-root execution (`appuser:10001` and `nginx:101`).
+  - Blocked privilege escalation with `security_opt: [no-new-privileges:true]`.
+  - Bounded memory and CPU via cgroups (`limits` and `reservations`) to prevent host-level OOM panics.
+- [x] **Simulate a failed deployment and investigate the logs**
+  - Executed deliberate failure scenarios: crashing entrypoint, failing health checks, and unhandled database network dropouts.
+  - Mastered targeted container diagnostics using `docker inspect`, `docker logs --tail`, and exit code analysis.
+- [x] **Document a rollback procedure using the previous image tag**
+  - Established a zero-rebuild rollback runbook capable of restoring service stability in seconds via pinned Git SHA image tags.
+
+---
+
+### Deep Dive: Production Concepts & Best Practices
+
+#### 1. Why `:latest` is an Anti-Pattern in Production
+
+| Dimension | `:latest` Tag | Immutable Commit SHA (`sha-a1b2c3d`) |
+|---|---|---|
+| **Determinism** | **Non-deterministic**: points to whatever was pushed last. | **100% Deterministic**: points to an exact git commit. |
+| **Auditability** | Cannot know what source code is running inside the container. | Direct 1-to-1 mapping to the Git commit history. |
+| **Rollback Speed** | Impossible to rollback without rebuilding or guessing. | **Instantaneous**: simply update the tag variable and restart. |
+| **Docker Cache** | Nodes may skip pulling because the tag name hasn't changed. | Nodes always pull new layer blobs because the tag is unique. |
+
+##### Tagging Example:
+```bash
+# Extract short git commit SHA locally
+COMMIT_SHA=$(git rev-parse --short HEAD)
+
+# Build and tag with both SHA and latest
+docker build -t my-app:${COMMIT_SHA} -t my-app:latest ./server -f server/Dockerfile.optimize
+```
+
+---
+
+#### 2. GitHub Actions Secrets & Multi-Registry Auth
+
+In `.github/workflows/ci-cd.yml`, secrets must never be hard-coded into repository files:
+
+- **Docker Hub Setup**:
+  1. Generate a Personal Access Token (PAT) at Docker Hub $\rightarrow$ Account Settings $\rightarrow$ Security $\rightarrow$ New Access Token (Read & Write).
+  2. In GitHub: Repository Settings $\rightarrow$ Secrets and variables $\rightarrow$ Actions $\rightarrow$ New repository secret:
+     - `DOCKERHUB_USERNAME`: your Docker Hub username
+     - `DOCKERHUB_TOKEN`: your generated Personal Access Token
+
+- **GitHub Container Registry (`ghcr.io`)**:
+  - Automatically authenticated using the runner's built-in `${{ secrets.GITHUB_TOKEN }}`:
+  ```yaml
+  - name: Log in to Registry
+    uses: docker/login-action@v3
+    with:
+      registry: ghcr.io
+      username: ${{ github.actor }}
+      password: ${{ secrets.GITHUB_TOKEN }}
+  ```
+
+---
+
+#### 3. Staged Quality Gates (Fail Fast Before Building)
+
+Container image building and pushing is resource-heavy and slow. A quality CI/CD pipeline enforces **Fail-Fast** stages:
+
+```
+[Lint & Typecheck] ───┐
+                      ├──> [Pass?] ──> [Docker Build & Test] ──> [Publish to Registry]
+[Unit & Syntax Check] ┘       │
+                              └──> [Fail?] ──> Pipeline Aborts Immediately (No Push)
+```
+
+In `.github/workflows/ci-cd.yml`, this is declared with `needs`:
+```yaml
+build-and-publish:
+  needs: [verify-client, verify-server]
+  if: github.ref == 'refs/heads/main'
+```
+
+---
+
+#### 4. Restart Policies: Comparison & Selection
+
+| Policy | Behavior on Failure | Behavior on Clean Exit | Behavior on Host Reboot | Best Use Case |
+|---|---|---|---|---|
+| `no` | Never restarts. | Never restarts. | Does not restart. | One-off CLI tasks, seed scripts, batch migrations. |
+| `on-failure[:max]` | Restarts only if exit code $\neq 0$. | Does not restart. | Restarts only if it was failing before shutdown. | Ephemeral background workers, processing queues. |
+| `always` | Restarts immediately. | Restarts immediately. | Always restarts (even if manually stopped). | Simple setups, but restarts even when stopped intentionally. |
+| `unless-stopped` | **Restarts immediately.** | **Restarts immediately.** | **Restarts unless manually stopped before reboot.** | **Production Services** (recommended default). |
+
+---
+
+#### 5. Defense-in-Depth Container Hardening
+
+Hardening containers minimizes the blast radius if an application dependency is exploited:
+
+1. **Non-Root Execution**:
+   - Containers run as unprivileged users (`appuser` UID 10001, `nginx` UID 101).
+   - Even if remote code execution (RCE) occurs, the attacker cannot modify host-mounted files or install OS packages.
+2. **Preventing Privilege Escalation**:
+   ```yaml
+   security_opt:
+     - no-new-privileges:true
+   ```
+   Prevents child processes from gaining more privileges than their parent (disables `setuid`/`setgid` binaries like `sudo` or `su`).
+3. **Restricting Linux Capabilities**:
+   ```yaml
+   cap_drop:
+     - ALL
+   ```
+   Drops all kernel capabilities (e.g., raw network sockets, mounting filesystems, kernel tracing).
+4. **Resource Quotas (cgroups v2)**:
+   ```yaml
+   deploy:
+     resources:
+       limits:
+         cpus: "1.0"
+         memory: 512M
+   ```
+   Guarantees that a memory leak in FastAPI or Node cannot starve the host system or trigger the Linux kernel Out-Of-Memory (OOM) killer against other services.
+
+---
+
+### 🧪 Hands-On Drills: Deployment Failure & Rollback Runbook
+
+#### Drill A: Diagnosing an Unhealthy Container
+
+1. **Simulate a Broken Health Check**:
+   Change the backend healthcheck target to a nonexistent endpoint (`http://localhost:8080/nonexistent`) or simulate a hang.
+2. **Observe Container Status**:
+   ```bash
+   docker compose ps
+   ```
+   *Output shows:*
+   ```text
+   NAME             IMAGE                 STATUS                     PORTS
+   written-server   written-server:test   Up 35 seconds (unhealthy)  8080/tcp
+   written-client   written-client:test   Up 40 seconds (healthy)    0.0.0.0:3000->3000/tcp
+   ```
+3. **Inspect the Exact Health Log History**:
+   ```bash
+   docker inspect --format='{{json .State.Health}}' written-server | jq
+   ```
+   *Reveals exact exit code, stdout/stderr, and HTTP 404 response received during the check.*
+
+---
+
+#### Drill B: Diagnosing a Crash on Startup (Exit Code Triage)
+
+1. **Simulate a Fatal Crash**:
+   Pass an invalid environment configuration (e.g. `PORT=invalid` or corrupt `DATABASE_URL`).
+2. **Check Container Exit Code**:
+   ```bash
+   docker ps -a --filter "name=written-server" --format "table {{.Names}}\t{{.Status}}"
+   ```
+   *Output shows:*
+   ```text
+   written-server   Exited (1) 4 seconds ago
+   ```
+3. **Triage Logs without Running Container**:
+   ```bash
+   docker logs --tail 50 written-server
+   ```
+4. **Common Container Exit Codes**:
+
+| Exit Code | Meaning | Common Cause |
+|---|---|---|
+| **0** | Clean Exit | Process finished its task successfully (e.g. migration script). |
+| **1** | Application Error | Unhandled Python exception, invalid syntax, or missing env variable. |
+| **127** | Command Not Found | The `CMD` or `ENTRYPOINT` binary does not exist inside the image. |
+| **137** | `SIGKILL` (Fatal) | Container was killed by Docker (`docker stop`) or **OOM Killer** (exceeded memory limit). |
+| **139** | Segmentation Fault | Memory corruption or binary incompatibility with the base OS image. |
+| **143** | `SIGTERM` | Graceful shutdown requested by host or orchestrator. |
+
+---
+
+### 🔄 Production Rollback Procedure
+
+When a bad release (`sha-badcommit`) is deployed and breaks production, rollback to the previous stable release (`sha-goodcommit`) in **under 30 seconds** without rebuilding:
+
+```bash
+# -----------------------------------------------------------------------------
+# STEP 1: Identify the previous stable Commit SHA
+# -----------------------------------------------------------------------------
+# Option A: From Git commit log
+git log -n 5 --oneline
+
+# Option B: From your container registry tag history
+# (e.g. previous tag: sha-7a8f9b2)
+
+# -----------------------------------------------------------------------------
+# STEP 2: Deploy the previous image tag via environment override
+# -----------------------------------------------------------------------------
+export IMAGE_TAG=sha-7a8f9b2
+docker compose pull server client    # Pull pre-built tested images from registry
+docker compose up -d                 # Recreate containers with previous image tag
+
+# -----------------------------------------------------------------------------
+# STEP 3: Verify system restoration & health
+# -----------------------------------------------------------------------------
+docker compose ps
+docker compose logs --tail 20 server client
+curl -I http://localhost:3000/api/health
+
+# -----------------------------------------------------------------------------
+# STEP 4: Persist the rollback in Git (Revert the faulty commit)
+# -----------------------------------------------------------------------------
+git revert HEAD --no-edit
+git push origin main
+```
+
+
 
 
